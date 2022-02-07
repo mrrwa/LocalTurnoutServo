@@ -131,7 +131,8 @@ void setup() {
 
   pinMode(LED_OUTPUT, OUTPUT);
 
-  EEPROM.update(LAST_TURNOUT_POS_EEPROM_INDEX, 0xFF);
+    // Uncomment the line below to test the initial unknown Turnout Position handling
+//  EEPROM.update(LAST_TURNOUT_POS_EEPROM_INDEX, 0xFF);
 
   lastTurnoutPos = (TURNOUT_POS) (EEPROM.read(LAST_TURNOUT_POS_EEPROM_INDEX));
 
