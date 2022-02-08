@@ -24,8 +24,8 @@
 //
 
 #include <EEPROM.h>
-#include <Bounce2.h>
 #include <elapsedMillis.h>
+#include <ButtonKing.h>
 
 #if defined(ARDUINO_AVR_UNO)
 #include <Servo.h>
@@ -35,7 +35,7 @@
 
 #define NORMAL_POS_AN_INP   A0
 #define REVERSE_POS_AN_INP  A1
-#define TOGGLE_BUTTON       4   
+#define TOGGLE_BUTTON_PIN   4   
 #define SERVO_OUTPUT        5
 #define LED_OUTPUT          LED_BUILTIN
 
@@ -44,7 +44,7 @@
 
 #define NORMAL_POS_AN_INP   A2
 #define REVERSE_POS_AN_INP  A3
-#define TOGGLE_BUTTON       2
+#define TOGGLE_BUTTON_PIN   2
 #define SERVO_OUTPUT        1
 #define LED_OUTPUT          0
 
@@ -55,6 +55,7 @@
 #define MILLIS_PER_SERVO_STEP 20
 #define MILLIS_PER_LED_FLASH_WHILE_SERVO_MOVES 50
 #define MILLIS_PER_LED_FLASH_UNKNOWN_POS 1000
+#define CALIBRATION_TIMEOUT_MILLIS  60000
 
 // The last Turnout Position is stored in EEPROM at the index defined below
 #define LAST_TURNOUT_POS_EEPROM_INDEX 0
@@ -74,11 +75,13 @@ Servo myservo;
 int16_t lastServoPos = -1;
 int16_t newServoPos = -1;
 
+boolean enableCalibrateMode = false;
+
 elapsedMillis sinceServoMoved = 0;
 elapsedMillis sinceLEDChanged = 0;
+elapsedMillis sinceCalibrationEnabled = 0;
 
-Bounce2::Button togglePosButton = Bounce2::Button();
-
+ButtonKing button(TOGGLE_BUTTON_PIN, HIGH, true);
 
 int16_t getServoPositionSetting(TURNOUT_POS turnoutPos)
 {
@@ -118,17 +121,14 @@ void setServoPos(int16_t servoPos)
   }
 }
 
-
 void setup() {
 #ifdef ENABLE_SERIAL_DEBUG
   Serial.begin(115200);
   Serial.println("\nLocal Turnout Servo Driver");
 #endif
 
-  togglePosButton.attach( TOGGLE_BUTTON, INPUT_PULLUP );
-  togglePosButton.interval(5);
-  togglePosButton.setPressedState(LOW); 
-
+  button.setClick(handleButtonClick);
+  button.setLongDoubleStop(handleLongDoublePress);  // Trigger on Release
   pinMode(LED_OUTPUT, OUTPUT);
 
     // Uncomment the line below to test the initial unknown Turnout Position handling
@@ -145,43 +145,40 @@ void setup() {
   }
 }
 
-
-void loop() {
-  togglePosButton.update();
   
-  if ( togglePosButton.pressed() )
+void loop() {
+  button.isClick();
+ 
+  if(enableCalibrateMode)
   {
-      // Toggle the turnout from the last position
-    TURNOUT_POS newTurnoutPos = (lastTurnoutPos == NORMAL_TURNOUT_POS) ? REVERSE_TURNOUT_POS : NORMAL_TURNOUT_POS ;
-
-    newServoPos = getServoPositionSetting( newTurnoutPos );
-
-      // If this is the first time we've set the server from Unknown then just move imediately to that position 
-    if(lastServoPos == -1)
+    if(sinceCalibrationEnabled >= CALIBRATION_TIMEOUT_MILLIS)
+      enableCalibrateMode = false;
+    else
     {
-      setServoPos( newServoPos );
+      newServoPos = getServoPositionSetting( lastTurnoutPos );
       lastServoPos = newServoPos;
-    }
 
 #ifdef ENABLE_SERIAL_DEBUG
-    Serial.print("loop: Button Pressed: New Servo Pos: "); Serial.println(newServoPos);
-#endif
-    
-    EEPROM.update(LAST_TURNOUT_POS_EEPROM_INDEX, newTurnoutPos);
-    lastTurnoutPos = newTurnoutPos;
+      Serial.print("loop: Calibration Mode Servo Pos: "); Serial.println(newServoPos); 
+#endif      
+      setServoPos( newServoPos );
+    }
   }
 
-    // Do we need to move the servo?
-  if((newServoPos != lastServoPos) && (sinceServoMoved >= MILLIS_PER_SERVO_STEP))
+  else
   {
-    int8_t moveDirection = (newServoPos > lastServoPos) ? 1 : -1;
-    lastServoPos += moveDirection;
-
+      // Do we need to move the servo?
+    if((newServoPos != lastServoPos) && (sinceServoMoved >= MILLIS_PER_SERVO_STEP))
+    {
+      int8_t moveDirection = (newServoPos > lastServoPos) ? 1 : -1;
+      lastServoPos += moveDirection;
+  
 #ifdef ENABLE_SERIAL_DEBUG
-    Serial.print("loop: Move Servo: Last Pos: "); Serial.println(lastServoPos);
+      Serial.print("loop: Move Servo: Last Pos: "); Serial.println(lastServoPos);
 #endif
-    
-    setServoPos( lastServoPos );
+      
+      setServoPos( lastServoPos );
+    }
   }
 
     // Update the LED state or Flash at different rates if servo Moving or Turnout Position Unknown
@@ -205,4 +202,38 @@ void loop() {
   if(myservo.attached() && sinceServoMoved > SERVO_DETACH_MILLIS)
      myservo.detach();
 #endif     
+}
+
+void handleLongDoublePress()
+{
+  enableCalibrateMode = !enableCalibrateMode;
+
+#ifdef ENABLE_SERIAL_DEBUG
+  Serial.print(F("handleLongDoublePress: Calibration Mode: ")); Serial.println(enableCalibrateMode ? "Enabled" : "Disabled" );
+#endif
+
+  if(enableCalibrateMode)
+    sinceCalibrationEnabled = 0;
+}
+
+void handleButtonClick()
+{
+    // Toggle the turnout from the last position
+  TURNOUT_POS newTurnoutPos = (lastTurnoutPos == NORMAL_TURNOUT_POS) ? REVERSE_TURNOUT_POS : NORMAL_TURNOUT_POS ;
+
+  newServoPos = getServoPositionSetting( newTurnoutPos );
+
+    // If this is the first time we've set the server from Unknown then just move imediately to that position 
+  if(lastServoPos == -1)
+  {
+    setServoPos( newServoPos );
+    lastServoPos = newServoPos;
+  }
+
+#ifdef ENABLE_SERIAL_DEBUG
+  Serial.print("loop: Button Pressed: New Servo Pos: "); Serial.println(newServoPos);
+#endif
+  
+  EEPROM.update(LAST_TURNOUT_POS_EEPROM_INDEX, newTurnoutPos);
+  lastTurnoutPos = newTurnoutPos;
 }
